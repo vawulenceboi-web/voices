@@ -1,0 +1,17 @@
+from pathlib import Path
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    api_key: str = "change-me"
+    device: str = "cuda"
+    host: str = "0.0.0.0"
+    port: int = 8000
+    voice_dir: Path = Path("./voices")
+    generated_dir: Path = Path("./generated")
+    max_reference_mb: int = 25
+    max_text_length: int = 3000
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+settings = Settings()
+settings.voice_dir.mkdir(parents=True, exist_ok=True)
+settings.generated_dir.mkdir(parents=True, exist_ok=True)
