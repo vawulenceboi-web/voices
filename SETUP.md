@@ -17,7 +17,7 @@ Create `/run/media/ksmo/D41AF0A31AF083B0/voices/.env.local`:
 ```bash
 cd /run/media/ksmo/D41AF0A31AF083B0/voices
 {
-  echo 'VOICE_API_BASE_URL=https://za7uy6kpy3cp5t-8000.proxy.runpod.net'
+  echo 'VOICE_API_BASE_URL=https://8c5buydqo1yexy-8000.proxy.runpod.net'
   awk -F= '$1=="API_KEY"{print "VOICE_API_KEY="$2}' server/.env
   echo 'VOICE_API_TIMEOUT_MS=600000'
 } > .env.local
@@ -27,9 +27,18 @@ Environment variables:
 
 | Variable | Required | Notes |
 | --- | --- | --- |
-| `VOICE_API_BASE_URL` | Yes | RunPod FastAPI base URL. Expected public URL is `https://za7uy6kpy3cp5t-8000.proxy.runpod.net` when HTTP port 8000 is exposed. |
+| `VOICE_API_BASE_URL` | Yes | RunPod FastAPI base URL. Expected public URL is `https://8c5buydqo1yexy-8000.proxy.runpod.net` when HTTP port 8000 is exposed. |
 | `VOICE_API_KEY` | Yes | Bearer token forwarded only by the local Next.js backend. Do not create `NEXT_PUBLIC_*` voice key variables. |
 | `VOICE_API_TIMEOUT_MS` | No | Defaults to 600000 ms. Long enough for first Chatterbox model load and generation. |
+
+Developer API keys are created by the private dashboard through the same
+server-side bridge. Configure these only in the RunPod FastAPI environment when
+you want developer keys to persist:
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `DEVELOPER_API_KEYS_DATABASE_URL` | For developer keys | Supabase PostgreSQL DSN, preferably a pooler URL. |
+| `DEVELOPER_API_KEY_HASH_SECRET` | Recommended | Stable server-side HMAC secret. Keep it unchanged or existing developer keys cannot be verified. |
 
 ## RunPod Service
 
@@ -48,6 +57,12 @@ Expected remote endpoints:
 | `GET` | `/api/voices` | List reference voices |
 | `POST` | `/api/voices` | Upload WAV/audio/video reference |
 | `POST` | `/api/tts` | Generate speech and return a complete WAV |
+| `GET` | `/api/developer-keys` | Admin list of masked developer API keys |
+| `POST` | `/api/developer-keys` | Admin create developer API key |
+| `POST` | `/api/developer-keys/{id}/revoke` | Admin revoke developer API key |
+| `GET` | `/v1/voices` | Developer list of available voices |
+| `POST` | `/v1/audio/speech` | Developer TTS with an existing `voice_id` |
+| `WS` | `/v1/realtime` | Developer segmented realtime voice endpoint |
 
 Port 8000 must be exposed as an HTTP port in the RunPod dashboard. If the
 public proxy returns 404 or 502, open the pod settings and add `8000` to
@@ -60,13 +75,13 @@ https://POD_ID-INTERNAL_PORT.proxy.runpod.net
 For this pod and service port, use:
 
 ```text
-https://za7uy6kpy3cp5t-8000.proxy.runpod.net
+https://8c5buydqo1yexy-8000.proxy.runpod.net
 ```
 
 If you need to start the remote API manually:
 
 ```bash
-ssh za7uy6kpy3cp5t-6441237e@ssh.runpod.io -i ~/.ssh/id_ed25519
+ssh 8c5buydqo1yexy-64411fba@ssh.runpod.io -i ~/.ssh/id_ed25519
 cd /workspace/voices/server
 source .venv/bin/activate
 DEVICE=cuda PYTHONPATH=/workspace/voices/server \
@@ -97,9 +112,10 @@ The UI calls only these local routes:
 | `GET` | `/api/voices` | `/api/voices` |
 | `POST` | `/api/voices` | `/api/voices` |
 | `POST` | `/api/tts` | `/api/tts` |
-
-There is no delete route because the current RunPod FastAPI service does not
-expose deletion.
+| `GET` | `/api/developer-keys` | `/api/developer-keys` |
+| `POST` | `/api/developer-keys` | `/api/developer-keys` |
+| `POST` | `/api/developer-keys/{id}/revoke` | `/api/developer-keys/{id}/revoke` |
+| `DELETE` | `/api/voices/{voice_id}` | `/api/voices/{voice_id}` |
 
 ## Verification Commands
 
@@ -134,7 +150,7 @@ curl -X POST http://localhost:3000/api/tts \
 Verify the RunPod GPU during generation:
 
 ```bash
-ssh za7uy6kpy3cp5t-6441237e@ssh.runpod.io -i ~/.ssh/id_ed25519
+ssh 8c5buydqo1yexy-64411fba@ssh.runpod.io -i ~/.ssh/id_ed25519
 nvidia-smi
 ```
 
@@ -150,7 +166,7 @@ For deployment, configure the same server-side variables in the hosting
 provider:
 
 ```text
-VOICE_API_BASE_URL=https://za7uy6kpy3cp5t-8000.proxy.runpod.net
+VOICE_API_BASE_URL=https://8c5buydqo1yexy-8000.proxy.runpod.net
 VOICE_API_KEY=<set as a secret using the same value as RunPod API_KEY>
 VOICE_API_TIMEOUT_MS=600000
 ```

@@ -49,6 +49,24 @@ Environment (`.env`):
 | `MAX_REFERENCE_MB`      | `25`       | Upload size cap                                |
 | `MAX_REFERENCE_SECONDS` | `30`       | Video/audio converted only up to this length   |
 | `MAX_TEXT_LENGTH`       | `3000`     | TTS text cap                                   |
+| `DEVELOPER_API_KEYS_DATABASE_URL` | unset | PostgreSQL DSN for the Supabase table that stores developer API-key hashes |
+| `DEVELOPER_API_KEY_HASH_SECRET` | unset | Stable server-side HMAC secret for hashing developer keys |
+
+When developer API keys are enabled, the backend creates this minimal Supabase
+PostgreSQL table automatically:
+
+```sql
+CREATE TABLE IF NOT EXISTS developer_api_keys (
+    id uuid PRIMARY KEY,
+    developer_name text NOT NULL CHECK (length(btrim(developer_name)) > 0),
+    key_hash text NOT NULL UNIQUE,
+    key_prefix text NOT NULL,
+    key_last4 text NOT NULL CHECK (length(key_last4) = 4),
+    active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    revoked_at timestamptz
+);
+```
 
 > **PyTorch/CUDA:** `chatterbox-tts` pulls in PyTorch. On a CUDA machine, install
 > the torch build matching your CUDA version *before* `chatterbox-tts` so it is
@@ -76,7 +94,7 @@ Configure the server-side bridge in `.env.local`:
 
 ```bash
 {
-  echo 'VOICE_API_BASE_URL=https://za7uy6kpy3cp5t-8000.proxy.runpod.net'
+  echo 'VOICE_API_BASE_URL=https://8c5buydqo1yexy-8000.proxy.runpod.net'
   awk -F= '$1=="API_KEY"{print "VOICE_API_KEY="$2}' server/.env
   echo 'VOICE_API_TIMEOUT_MS=600000'
 } > .env.local
@@ -97,6 +115,12 @@ Do not use `NEXT_PUBLIC_*` for the voice API key.
 | GET    | `/api/voices`   | local | List saved voices                          |
 | POST   | `/api/voices`   | local | Upload WAV / audio / video reference       |
 | POST   | `/api/tts`      | local | Generate speech `{voice_id, text}` → WAV   |
+| GET    | `/api/developer-keys` | local | List masked developer API keys |
+| POST   | `/api/developer-keys` | local | Create a developer API key; full key is returned once |
+| POST   | `/api/developer-keys/{id}/revoke` | local | Revoke a developer API key |
+| GET    | `/v1/voices` | Bearer `vsk_live_*` | Developer voice list |
+| POST   | `/v1/audio/speech` | Bearer `vsk_live_*` | Developer TTS using an existing `voice_id` |
+| WS     | `/v1/realtime` | Bearer `vsk_live_*` | Segmented realtime TTS over WebSocket |
 
 ```bash
 curl http://localhost:3000/api/voices
@@ -104,6 +128,16 @@ curl -X POST -F 'file=@ref.wav' http://localhost:3000/api/voices
 curl -X POST http://localhost:3000/api/tts \
   -H 'Content-Type: application/json' \
   -d '{"voice_id":"voice_xxx","text":"Hello from my application."}' --output speech.wav
+```
+
+Developer apps authenticate directly to the RunPod FastAPI service:
+
+```bash
+curl -H 'Authorization: Bearer vsk_live_xxx' https://YOUR-POD-8000.proxy.runpod.net/v1/voices
+curl -X POST https://YOUR-POD-8000.proxy.runpod.net/v1/audio/speech \
+  -H 'Authorization: Bearer vsk_live_xxx' \
+  -H 'Content-Type: application/json' \
+  -d '{"voice_id":"voice_xxx","text":"Hello from my bot."}' --output speech.wav
 ```
 
 ## Tests
@@ -129,8 +163,8 @@ cd server && ./.venv/bin/python -m pytest tests -q
 5. **Fragile frontend error handling** — non-JSON or missing `detail` responses
    crashed the UI instead of showing the message; upload accept-list now covers
    video/audio, not just `.wav`.
-6. **Tests** — extended to cover the new upload paths (6 passing, incl. a
-   regression test that converted uploads parse as valid WAVs).
+6. **Tests** — extended to cover uploads, delete behavior, developer API keys,
+   developer TTS, and the segmented realtime WebSocket path.
 7. **Corrupt WAV headers on converted uploads** — ffmpeg writes `0xFFFFFFFF`
    size fields when streaming WAV to a pipe (it cannot seek back), so strict
    parsers (Python's `wave`, some clients) misread the frame count. Converted
@@ -146,8 +180,6 @@ cd server && ./.venv/bin/python -m pytest tests -q
       can take minutes; nothing in the UI indicates this. Add a loading
       indicator/health state, and pre-download the model at startup or via a
       dedicated command.
-- [ ] **Deleting voices** — there is no `DELETE /api/voices/{voice_id}` and no
-      delete button in the UI. References can only be overwritten by re-upload.
 - [ ] **Generated file growth** — every TTS call writes a WAV into
       `server/generated/` and never deletes it. Add retention (e.g. delete
       files older than 24 h, or return `FileResponse` with
@@ -158,17 +190,9 @@ cd server && ./.venv/bin/python -m pytest tests -q
 
 ### Medium priority
 
-- [ ] **`typescript.ignoreBuildErrors: true`** in `next.config.mjs` hides type
-      errors. Resolve them and flip it off.
-- [ ] **Google Fonts at build time** — `next/font/google` (`DM_Mono`,
-      `Instrument_Serif`) requires network access during `next build`; offline
-      builds fail. Vendor the font files locally to remove this dependency.
 - [ ] **Reference quality** — for videos the reference is the *first* 30 s of
       audio, which may be silent or not contain the target speaker. Better:
       let the user pick a segment, or skip silence before sampling.
-- [ ] **No voice metadata** — voices are random IDs (`voice_abc123…`) with no
-      name, preview waveform, or creation date. A `name` + `created_at` column
-      would make the selector usable with many voices.
 - [ ] **Long texts block the request** — TTS is synchronous; a 3000-character
       prompt ties up the HTTP request. For personal use this is acceptable; a
       background job + `GET /api/tts/{id}` would fix it.
@@ -180,19 +204,11 @@ cd server && ./.venv/bin/python -m pytest tests -q
 
 - [ ] **CORS wide open** (`allow_origins=["*"]`) — fine on localhost; restrict
       to `http://localhost:3000` before exposing the API.
-- [ ] **Expose RunPod HTTP port 8000** — the local bridge expects the RunPod
-      proxy URL `https://za7uy6kpy3cp5t-8000.proxy.runpod.net`; add port 8000
-      to the pod's exposed HTTP ports if that URL returns 404 or 502.
+- [ ] **Expose RunPod HTTP port 8000** — the local bridge expects a RunPod
+      proxy URL like `https://8c5buydqo1yexy-8000.proxy.runpod.net`; add port
+      8000 to the pod's exposed HTTP ports if that URL returns 404 or 502.
 - [ ] **Upload validation** — `valid_wav()` only checks the WAV header; a
       truncated payload passes. Verify frames against the header
       (`getnframes()` × frame width vs actual size) when strictness matters.
       (The header size fields of converted uploads are now patched — the
       `getnframes()` → 2147483647 issue is resolved.)
-- [ ] **Tests write into the real `server/voices/` dir** — `tests/test_api.py`
-      posts uploads with the app's default `VOICE_DIR`, so every test run
-      leaves `voice_*.wav` files behind. Point the tests at a temp dir
-      (fixture monkeypatching `VOICE_DIR`) and clean up after each test.
-- [ ] **`README` / branch hygiene** — this repo has both `pnpm-lock.yaml` and
-      `package-lock.json`; pick one package manager and delete the other lock
-      file. The branch name is `khostel_original`.
-- [ ] **Rename package** — `package.json` still says `"name": "my-project"`.

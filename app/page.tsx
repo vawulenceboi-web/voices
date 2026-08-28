@@ -4,8 +4,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import {
   AlertCircle,
+  Ban,
   CheckCircle2,
+  Copy,
   Download,
+  KeyRound,
   Loader2,
   Mic2,
   Play,
@@ -45,7 +48,21 @@ type PreviewAudio = {
   url: string
 }
 
+type DeveloperApiKey = {
+  id: string
+  developer_name: string
+  masked_key: string
+  active: boolean
+  created_at?: string
+  revoked_at?: string | null
+}
+
+type CreatedDeveloperApiKey = DeveloperApiKey & {
+  api_key: string
+}
+
 const MAX_TEXT_LENGTH = 3000
+const MAX_DEVELOPER_NAME_LENGTH = 120
 const ACCEPT = 'audio/wav,.wav,audio/mpeg,.mp3,audio/mp4,.m4a,audio/aac,.aac,audio/flac,.flac,audio/ogg,.ogg,audio/opus,.opus,video/mp4,.mp4,video/quicktime,.mov,video/webm,.webm,video/x-matroska,.mkv,video/x-msvideo,.avi,video/x-m4v,.m4v'
 const SUPPORTED_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v']
 
@@ -123,6 +140,13 @@ export default function Page() {
   const [previewAudio, setPreviewAudio] = useState<PreviewAudio | null>(null)
   const [generating, setGenerating] = useState(false)
   const [generatedAudio, setGeneratedAudio] = useState<GeneratedAudio | null>(null)
+  const [developerKeys, setDeveloperKeys] = useState<DeveloperApiKey[]>([])
+  const [developerName, setDeveloperName] = useState('')
+  const [loadingDeveloperKeys, setLoadingDeveloperKeys] = useState(false)
+  const [creatingDeveloperKey, setCreatingDeveloperKey] = useState(false)
+  const [revokingDeveloperKeyId, setRevokingDeveloperKeyId] = useState('')
+  const [developerKeyError, setDeveloperKeyError] = useState('')
+  const [createdDeveloperKey, setCreatedDeveloperKey] = useState<CreatedDeveloperApiKey | null>(null)
 
   const selectedVoice = useMemo(
     () => voices.find(voice => voice.voice_id === selectedVoiceId),
@@ -131,8 +155,11 @@ export default function Page() {
   const busy = loadingVoices || uploading || generating || Boolean(deletingVoiceId)
   const cleanText = text.trim()
   const cleanVoiceName = voiceNameInput.trim()
+  const cleanDeveloperName = developerName.trim()
   const canGenerate = Boolean(selectedVoiceId && cleanText && !busy)
   const canAddVoice = Boolean(cleanVoiceName && referenceFile && !busy)
+  const developerKeyBusy = loadingDeveloperKeys || creatingDeveloperKey || Boolean(revokingDeveloperKeyId)
+  const canCreateDeveloperKey = Boolean(cleanDeveloperName && !developerKeyBusy)
   const disabledAfterHydration = (disabled: boolean) => hydrated ? disabled : undefined
 
   async function checkHealth() {
@@ -183,6 +210,22 @@ export default function Page() {
     }
   }
 
+  async function loadDeveloperKeys() {
+    setLoadingDeveloperKeys(true)
+    setDeveloperKeyError('')
+
+    try {
+      const response = await fetch('/api/developer-keys', { cache: 'no-store' })
+      if (!response.ok) throw new Error(await errorDetail(response))
+      const data = await response.json()
+      setDeveloperKeys(Array.isArray(data.keys) ? data.keys as DeveloperApiKey[] : [])
+    } catch (error) {
+      setDeveloperKeyError(error instanceof Error ? error.message : 'Could not load developer API keys.')
+    } finally {
+      setLoadingDeveloperKeys(false)
+    }
+  }
+
   useEffect(() => {
     setHydrated(true)
   }, [])
@@ -191,6 +234,7 @@ export default function Page() {
     if (!hydrated) return
     checkHealth()
     loadVoices()
+    loadDeveloperKeys()
   }, [hydrated])
 
   useEffect(() => {
@@ -350,6 +394,76 @@ export default function Page() {
       setMessage({ tone: 'bad', text: error instanceof Error ? error.message : 'Could not delete voice.' })
     } finally {
       setDeletingVoiceId('')
+    }
+  }
+
+  async function generateDeveloperKey() {
+    if (!cleanDeveloperName) {
+      setDeveloperKeyError('Developer name is required.')
+      return
+    }
+    if (cleanDeveloperName.length > MAX_DEVELOPER_NAME_LENGTH) {
+      setDeveloperKeyError(`Developer name exceeds ${MAX_DEVELOPER_NAME_LENGTH} characters.`)
+      return
+    }
+
+    setCreatingDeveloperKey(true)
+    setDeveloperKeyError('')
+
+    try {
+      const response = await fetch('/api/developer-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ developer_name: cleanDeveloperName }),
+      })
+      if (!response.ok) throw new Error(await errorDetail(response))
+
+      const created = await response.json() as CreatedDeveloperApiKey
+      const { api_key: _apiKey, ...maskedKey } = created
+      setCreatedDeveloperKey(created)
+      setDeveloperName('')
+      setDeveloperKeys(previous => [maskedKey, ...previous.filter(key => key.id !== created.id)])
+      setMessage({ tone: 'good', text: 'Developer API key created.' })
+    } catch (error) {
+      setDeveloperKeyError(error instanceof Error ? error.message : 'Could not generate developer API key.')
+    } finally {
+      setCreatingDeveloperKey(false)
+    }
+  }
+
+  async function copyCreatedDeveloperKey() {
+    if (!createdDeveloperKey?.api_key) return
+    try {
+      await navigator.clipboard.writeText(createdDeveloperKey.api_key)
+      setMessage({ tone: 'good', text: 'API key copied.' })
+    } catch {
+      setMessage({ tone: 'bad', text: 'Could not copy API key.' })
+    }
+  }
+
+  async function revokeDeveloperKey(key: DeveloperApiKey) {
+    if (!window.confirm(`Revoke the API key for ${key.developer_name}?`)) return
+
+    setRevokingDeveloperKeyId(key.id)
+    setDeveloperKeyError('')
+
+    try {
+      const response = await fetch(`/api/developer-keys/${encodeURIComponent(key.id)}/revoke`, {
+        method: 'POST',
+        cache: 'no-store',
+      })
+      if (!response.ok) throw new Error(await errorDetail(response))
+
+      const revoked = await response.json() as DeveloperApiKey
+      setDeveloperKeys(previous => previous.map(item => item.id === revoked.id ? revoked : item))
+      if (createdDeveloperKey?.id === revoked.id) {
+        setCreatedDeveloperKey(null)
+      }
+      setMessage({ tone: 'good', text: 'Developer API key revoked.' })
+    } catch (error) {
+      setDeveloperKeyError(error instanceof Error ? error.message : 'Could not revoke developer API key.')
+    } finally {
+      setRevokingDeveloperKeyId('')
     }
   }
 
@@ -571,6 +685,93 @@ export default function Page() {
               ) : (
                 <div className="empty-state">No generated audio yet.</div>
               )}
+            </section>
+
+            <section className="studio-section developer-keys" aria-label="Developer API keys">
+              <div className="section-heading">
+                <h2>Developer API Keys</h2>
+                <button className="icon-button" onClick={loadDeveloperKeys} disabled={disabledAfterHydration(loadingDeveloperKeys)} type="button" title="Refresh developer API keys">
+                  <RefreshCw className={loadingDeveloperKeys ? 'spin' : ''} size={17} />
+                </button>
+              </div>
+
+              <div className="form-grid">
+                <label className="field-label" htmlFor="developer-name">Developer Name</label>
+                <input
+                  id="developer-name"
+                  className="text-input"
+                  value={developerName}
+                  onChange={event => setDeveloperName(event.target.value)}
+                  maxLength={MAX_DEVELOPER_NAME_LENGTH}
+                  placeholder="Acme Sales Bot"
+                  autoComplete="off"
+                  disabled={disabledAfterHydration(developerKeyBusy)}
+                />
+
+                <button className="primary-button add-button" onClick={generateDeveloperKey} disabled={disabledAfterHydration(!canCreateDeveloperKey)} type="button">
+                  {creatingDeveloperKey ? <Loader2 className="spin" size={16} /> : <KeyRound size={16} />}
+                  Generate API Key
+                </button>
+              </div>
+
+              {createdDeveloperKey && (
+                <div className="created-key-panel">
+                  <div>
+                    <h3>API Key Created</h3>
+                    <p>Copy this key now. It will not be shown again.</p>
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>Developer</dt>
+                      <dd>{createdDeveloperKey.developer_name}</dd>
+                    </div>
+                    <div>
+                      <dt>API Key</dt>
+                      <dd className="one-time-key">
+                        <code>{createdDeveloperKey.api_key}</code>
+                        <button className="icon-button small" onClick={copyCreatedDeveloperKey} type="button" title="Copy API key">
+                          <Copy size={14} />
+                        </button>
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              )}
+
+              <div className="developer-key-list">
+                {developerKeyError ? (
+                  <div className="message bad" role="status">
+                    <AlertCircle size={17} />
+                    <span>{developerKeyError}</span>
+                  </div>
+                ) : loadingDeveloperKeys && developerKeys.length === 0 ? (
+                  <div className="empty-state">Loading developer API keys.</div>
+                ) : developerKeys.length === 0 ? (
+                  <div className="empty-state">No developer API keys yet.</div>
+                ) : (
+                  developerKeys.map(key => {
+                    const revoking = revokingDeveloperKeyId === key.id
+
+                    return (
+                      <article className="developer-key-row" key={key.id}>
+                        <div className="developer-key-main">
+                          <h3>{key.developer_name}</h3>
+                          <code>{key.masked_key}</code>
+                        </div>
+                        <div className="developer-key-actions">
+                          <span className={key.active ? 'status-pill active' : 'status-pill revoked'}>
+                            {key.active ? 'Active' : 'Revoked'}
+                          </span>
+                          <button className="danger-button" onClick={() => revokeDeveloperKey(key)} disabled={disabledAfterHydration(developerKeyBusy || !key.active)} type="button">
+                            {revoking ? <Loader2 className="spin" size={15} /> : <Ban size={15} />}
+                            Revoke
+                          </button>
+                        </div>
+                      </article>
+                    )
+                  })
+                )}
+              </div>
             </section>
 
             {message && (

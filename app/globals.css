@@ -87,7 +87,9 @@ p {
 .generate-row,
 .output-actions,
 .message,
-.selected-mark {
+.selected-mark,
+.developer-key-actions,
+.one-time-key {
   display: flex;
   align-items: center;
 }
@@ -205,6 +207,109 @@ h3 {
   border-radius: 8px;
   background: var(--card);
   padding: 14px;
+}
+
+.developer-keys {
+  display: grid;
+  gap: 16px;
+}
+
+.developer-key-list {
+  display: grid;
+  gap: 10px;
+}
+
+.developer-key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 14px;
+}
+
+.developer-key-main {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.developer-key-main code,
+.one-time-key code {
+  overflow-wrap: anywhere;
+  color: var(--muted-foreground);
+  font-family: var(--app-font-mono);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.developer-key-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.status-pill {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.status-pill.active {
+  border-color: #b8d8c0;
+  color: var(--good);
+}
+
+.status-pill.revoked {
+  border-color: #d0d0d0;
+  color: var(--muted-foreground);
+}
+
+.created-key-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid #b8d8c0;
+  border-radius: 8px;
+  background: #f7fbf8;
+  padding: 14px;
+}
+
+.created-key-panel p {
+  margin-top: 5px;
+  color: var(--good);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.created-key-panel dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.created-key-panel dt {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.created-key-panel dd {
+  margin: 3px 0 0;
+}
+
+.one-time-key {
+  min-width: 0;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .voice-row.selected {
@@ -524,9 +629,15 @@ a[aria-disabled='true'] {
   .voice-actions,
   .file-picker,
   .generate-row,
-  .output-actions {
+  .output-actions,
+  .developer-key-actions,
+  .one-time-key {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .developer-key-row {
+    grid-template-columns: 1fr;
   }
 
   .primary-button,

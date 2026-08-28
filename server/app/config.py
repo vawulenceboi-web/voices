@@ -3,6 +3,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     api_key: str = "change-me"
+    database_url: str | None = None
+    developer_api_keys_database_url: str | None = None
+    developer_api_key_hash_secret: str | None = None
     device: str = "cuda"
     host: str = "0.0.0.0"
     port: int = 8000

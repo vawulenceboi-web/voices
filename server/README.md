@@ -32,7 +32,16 @@ Open `http://localhost:3000` for the browser control panel, and set
 `VOICE_API_BASE_URL` plus `VOICE_API_KEY` in the Next app's server-side
 environment. Do not use `NEXT_PUBLIC_*` for the voice API key.
 
-The interface uploads a WAV reference, lists voices, generates speech, and provides playback/download. No database, queue, Redis, Twilio, or LiveKit is required.
+The private interface uploads a WAV reference, lists voices, generates speech, and provides playback/download. A Supabase PostgreSQL table is used only when developer API keys are enabled; voice files and generated WAV files stay on disk.
+
+Developer API key storage uses these optional variables:
+
+```bash
+DEVELOPER_API_KEYS_DATABASE_URL=postgresql://...
+DEVELOPER_API_KEY_HASH_SECRET=replace-with-a-stable-server-secret
+```
+
+The backend creates `developer_api_keys` on startup when a PostgreSQL DSN is configured. Raw developer keys are never stored; only an HMAC-SHA256 hash, prefix, last four characters, active flag, and timestamps are persisted.
 
 ## API
 
@@ -40,6 +49,8 @@ The interface uploads a WAV reference, lists voices, generates speech, and provi
 curl -H 'Authorization: Bearer change-me' http://localhost:8000/api/voices
 curl -X POST -H 'Authorization: Bearer change-me' -F 'file=@reference.wav' http://localhost:8000/api/voices
 curl -X POST http://localhost:8000/api/tts -H 'Authorization: Bearer change-me' -H 'Content-Type: application/json' -d '{"voice_id":"voice_001","text":"Hello from my application."}' --output speech.wav
+curl -H 'Authorization: Bearer vsk_live_xxx' http://localhost:8000/v1/voices
+curl -X POST http://localhost:8000/v1/audio/speech -H 'Authorization: Bearer vsk_live_xxx' -H 'Content-Type: application/json' -d '{"voice_id":"voice_001","text":"Hello from my developer app."}' --output speech.wav
 ```
 
 ```python

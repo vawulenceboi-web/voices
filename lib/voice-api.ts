@@ -31,6 +31,25 @@ export type VoiceHealthResponse = {
   }
 }
 
+export type DeveloperApiKey = {
+  id: string
+  developer_name: string
+  key_prefix: string
+  key_last4: string
+  masked_key: string
+  active: boolean
+  created_at?: string
+  revoked_at?: string | null
+}
+
+export type DeveloperApiKeyListResponse = {
+  keys: DeveloperApiKey[]
+}
+
+export type CreatedDeveloperApiKey = DeveloperApiKey & {
+  api_key: string
+}
+
 type RequestOptions = {
   method?: string
   body?: BodyInit
@@ -183,6 +202,34 @@ export async function deleteVoice(voiceId: string) {
   })
 
   return response.json() as Promise<{ voice_id: string; deleted: boolean }>
+}
+
+export async function listDeveloperApiKeys() {
+  const response = await runPodFetch('/api/developer-keys', { timeoutMs: 30_000 })
+  const data = (await response.json()) as DeveloperApiKeyListResponse
+  return {
+    keys: Array.isArray(data.keys) ? data.keys : [],
+  }
+}
+
+export async function createDeveloperApiKey(developerName: string) {
+  const response = await runPodFetch('/api/developer-keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ developer_name: developerName }),
+    timeoutMs: 30_000,
+  })
+
+  return response.json() as Promise<CreatedDeveloperApiKey>
+}
+
+export async function revokeDeveloperApiKey(keyId: string) {
+  const response = await runPodFetch(`/api/developer-keys/${encodeURIComponent(keyId)}/revoke`, {
+    method: 'POST',
+    timeoutMs: 30_000,
+  })
+
+  return response.json() as Promise<DeveloperApiKey>
 }
 
 export async function generateTts(voiceId: string, text: string) {
