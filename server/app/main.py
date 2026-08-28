@@ -25,6 +25,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from .config import settings
 from .developer_keys import (
@@ -55,6 +56,35 @@ CONVERTIBLE_EXTS = {
 }
 
 
+def _delete_generated_file(path: Path):
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not remove generated audio file %s", path.name, exc_info=True)
+
+
+def _cleanup_old_generated_files() -> int:
+    ttl_seconds = settings.generated_audio_ttl_seconds
+    if ttl_seconds <= 0:
+        return 0
+
+    generated_dir = settings.generated_dir.resolve()
+    if generated_dir == settings.voice_dir.resolve():
+        logger.warning("Generated audio cleanup skipped because generated_dir equals voice_dir")
+        return 0
+
+    cutoff = datetime.now(timezone.utc).timestamp() - ttl_seconds
+    removed = 0
+    for path in generated_dir.glob("*.wav"):
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            logger.warning("Could not remove old generated audio file %s", path.name, exc_info=True)
+    return removed
+
+
 def _warm_engine():
     try:
         timings = engine.warmup()
@@ -77,6 +107,7 @@ def _ensure_developer_key_schema():
 
 @app.on_event("startup")
 async def warm_engine_on_startup():
+    asyncio.get_running_loop().run_in_executor(None, _cleanup_old_generated_files)
     if settings.preload_model:
         asyncio.get_running_loop().run_in_executor(None, _warm_engine)
     if developer_key_store.configured:
@@ -187,6 +218,7 @@ def _public_voice(voice: dict) -> dict:
 def _synthesize_to_file(voice_id: str, text: str) -> tuple[Path, dict]:
     request_started_at = perf_counter()
     timings = {"request_received_ms": 0.0}
+    _cleanup_old_generated_files()
 
     validation_started_at = perf_counter()
     if len(text) > settings.max_text_length:
@@ -216,9 +248,14 @@ def _synthesize_to_file(voice_id: str, text: str) -> tuple[Path, dict]:
     return output, timings
 
 
-def _tts_file_response(output: Path, timings: dict) -> FileResponse:
+def _tts_file_response(output: Path, timings: dict, cleanup: bool = False) -> FileResponse:
     response_started_at = perf_counter()
-    response = FileResponse(output, media_type="audio/wav", filename=output.name)
+    response = FileResponse(
+        output,
+        media_type="audio/wav",
+        filename=output.name,
+        background=BackgroundTask(_delete_generated_file, output) if cleanup else None,
+    )
     timings["response_construction_ms"] = _elapsed_ms(response_started_at)
     response.headers["X-TTS-Timings"] = _timings_header(timings)
     response.headers["X-TTS-Total-Ms"] = str(timings["total_request_ms"])
@@ -261,7 +298,15 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "engine": engine.status()}
+    engine_status = engine.status()
+    return {
+        "status": "ready" if engine_status["model_loaded"] else "warming_up",
+        "api_status": "alive",
+        "device": engine_status["device"],
+        "model_loaded": engine_status["model_loaded"],
+        "audio_io_loaded": engine_status["audio_io_loaded"],
+        "engine": engine_status,
+    }
 
 
 @app.get("/api/voices", dependencies=[Depends(auth)])
@@ -357,7 +402,7 @@ def developer_voices():
 @app.post("/v1/audio/speech", dependencies=[Depends(developer_auth)])
 def developer_tts(payload: TTSRequest):
     output, timings = _synthesize_to_file(payload.voice_id, payload.text)
-    response = _tts_file_response(output, timings)
+    response = _tts_file_response(output, timings, cleanup=True)
     logger.info("developer tts timings voice_id=%s %s", payload.voice_id, _timings_header(timings))
     return response
 
@@ -430,12 +475,16 @@ async def realtime_voice(websocket: WebSocket):
 
             sequence += 1
             segment_started_at = perf_counter()
+            output: Path | None = None
             try:
                 output, timings = await asyncio.to_thread(_synthesize_to_file, active_voice_id, text.strip())
                 audio = await asyncio.to_thread(output.read_bytes)
             except HTTPException as exc:
                 await websocket.send_json({"type": "error", "status": exc.status_code, "detail": exc.detail})
                 continue
+            finally:
+                if output is not None:
+                    await asyncio.to_thread(_delete_generated_file, output)
 
             await websocket.send_json({
                 "type": "audio",

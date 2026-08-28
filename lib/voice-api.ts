@@ -20,6 +20,10 @@ export type UploadedVoice = Voice & {
 
 export type VoiceHealthResponse = {
   status: string
+  api_status?: string
+  device?: string
+  model_loaded?: boolean
+  audio_io_loaded?: boolean
   engine?: {
     device?: string
     model_loaded?: boolean

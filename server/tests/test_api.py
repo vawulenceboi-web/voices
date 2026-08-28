@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import wave
 from datetime import datetime, timezone
 
@@ -108,7 +109,11 @@ def wav_bytes():
     return buf.getvalue()
 
 def test_health_and_auth():
-    assert client.get("/health").json()["status"] == "ok"
+    health = client.get("/health").json()
+    assert health["api_status"] == "alive"
+    assert health["status"] in {"warming_up", "ready"}
+    assert health["device"] == engine.device
+    assert health["model_loaded"] is False
     assert client.get("/api/voices").status_code == 401
 
 def test_upload_and_list():
@@ -223,6 +228,26 @@ def test_tts_returns_wav_and_safe_timing_headers(monkeypatch):
     assert timings["reference_cache_hit"] is True
     assert timings["gpu_inference_ms"] == 1.0
     assert "generated_file" in timings
+    assert (main_module.settings.generated_dir / timings["generated_file"]).is_file()
+
+
+def test_cleanup_old_generated_audio_only_touches_generated_dir(monkeypatch):
+    old_generated = main_module.settings.generated_dir / "old.wav"
+    new_generated = main_module.settings.generated_dir / "new.wav"
+    old_voice_reference = store.directory / "old.wav"
+    old_generated.write_bytes(wav_bytes())
+    new_generated.write_bytes(wav_bytes())
+    old_voice_reference.write_bytes(wav_bytes())
+
+    expired = datetime.now(timezone.utc).timestamp() - 7200
+    os.utime(old_generated, (expired, expired))
+    os.utime(old_voice_reference, (expired, expired))
+    monkeypatch.setattr(main_module.settings, "generated_audio_ttl_seconds", 3600)
+
+    assert main_module._cleanup_old_generated_files() == 1
+    assert not old_generated.exists()
+    assert new_generated.is_file()
+    assert old_voice_reference.is_file()
 
 
 def create_developer_key():
@@ -311,6 +336,7 @@ def test_developer_speech_uses_selected_voice_id(monkeypatch, developer_key_stor
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("audio/wav")
     assert response.content.startswith(b"RIFF")
+    assert list(main_module.settings.generated_dir.glob("*.wav")) == []
     assert calls == [{
         "text": "Hello",
         "reference": store.path(voice["voice_id"]),
@@ -362,6 +388,7 @@ def test_realtime_uses_same_developer_key_and_segmented_tts(monkeypatch, develop
     assert meta["content_type"] == "audio/wav"
     assert meta["timings"]["reference_cache_hit"] is True
     assert audio.startswith(b"RIFF")
+    assert list(main_module.settings.generated_dir.glob("*.wav")) == []
     assert calls == [{
         "text": "Thanks for calling.",
         "reference": store.path(voice["voice_id"]),
