@@ -9,7 +9,10 @@ class Settings(BaseSettings):
     voice_dir: Path = Path("./voices")
     generated_dir: Path = Path("./generated")
     max_reference_mb: int = 25
+    max_reference_seconds: int = 30
     max_text_length: int = 3000
+    conditioning_cache_size: int = 8
+    preload_model: bool = True
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

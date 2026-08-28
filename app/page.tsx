@@ -1,63 +1,587 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { ArrowUpRight, Download, Headphones, Mic2, RefreshCw, Upload, Volume2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ChangeEvent } from 'react'
+import {
+  AlertCircle,
+  CheckCircle2,
+  Download,
+  Loader2,
+  Mic2,
+  Play,
+  Plus,
+  RefreshCw,
+  Square,
+  Trash2,
+  Upload,
+  Volume2,
+} from 'lucide-react'
 
-const API_URL = process.env.NEXT_PUBLIC_VOICE_API_URL || 'http://localhost:8000'
-const API_KEY = process.env.NEXT_PUBLIC_VOICE_API_KEY || 'change-me'
-type Voice = { voice_id: string; filename: string; size_bytes: number }
+type Voice = {
+  id?: string
+  voice_id: string
+  name?: string
+  display_name?: string
+  preview_available?: boolean
+}
+
+type Health = {
+  service: 'checking' | 'online' | 'warming' | 'offline'
+  detail?: string
+}
+
+type Message = {
+  tone: 'neutral' | 'good' | 'bad'
+  text: string
+}
+
+type GeneratedAudio = {
+  url: string
+  filename: string
+}
+
+type PreviewAudio = {
+  voiceId: string
+  url: string
+}
+
+const MAX_TEXT_LENGTH = 3000
+const ACCEPT = 'audio/wav,.wav,audio/mpeg,.mp3,audio/mp4,.m4a,audio/aac,.aac,audio/flac,.flac,audio/ogg,.ogg,audio/opus,.opus,video/mp4,.mp4,video/quicktime,.mov,video/webm,.webm,video/x-matroska,.mkv,video/x-msvideo,.avi,video/x-m4v,.m4v'
+const SUPPORTED_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v']
+
+function detailFromJson(body: unknown, fallback: string) {
+  if (body && typeof body === 'object' && 'detail' in body) {
+    const detail = (body as { detail?: unknown }).detail
+    if (typeof detail === 'string') return detail
+    if (detail) return JSON.stringify(detail)
+  }
+  return fallback
+}
+
+async function errorDetail(response: Response) {
+  try {
+    return detailFromJson(await response.json(), `Request failed (${response.status}).`)
+  } catch {
+    return `Request failed (${response.status}).`
+  }
+}
+
+function xhrErrorDetail(status: number, responseText: string) {
+  try {
+    return detailFromJson(JSON.parse(responseText), `Upload failed (${status}).`)
+  } catch {
+    return responseText.trim() || `Upload failed (${status}).`
+  }
+}
+
+function voiceKey(voice: Voice) {
+  return voice.id || voice.voice_id
+}
+
+function voiceName(voice?: Voice) {
+  if (!voice) return 'None'
+  return voice.display_name || voice.name || 'Saved voice'
+}
+
+function filenameFromDisposition(value: string | null, fallback: string) {
+  if (!value) return fallback
+  const utfMatch = value.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utfMatch?.[1]) return decodeURIComponent(utfMatch[1].replace(/"/g, ''))
+  const match = value.match(/filename="?([^";]+)"?/i)
+  return match?.[1] || fallback
+}
+
+function hasSupportedExtension(file: File) {
+  const suffix = file.name.split('.').pop()?.toLowerCase()
+  return Boolean(suffix && SUPPORTED_EXTENSIONS.includes(suffix))
+}
+
+function statusLabel(health: Health) {
+  if (health.service === 'online') return 'Online'
+  if (health.service === 'warming') return 'Warming up'
+  if (health.service === 'offline') return 'Offline'
+  return 'Checking'
+}
 
 export default function Page() {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const previewPlayerRef = useRef<HTMLAudioElement>(null)
   const [voices, setVoices] = useState<Voice[]>([])
-  const [voiceId, setVoiceId] = useState('')
+  const [selectedVoiceId, setSelectedVoiceId] = useState('')
+  const [voiceNameInput, setVoiceNameInput] = useState('')
+  const [referenceFile, setReferenceFile] = useState<File | null>(null)
   const [text, setText] = useState('')
-  const [audioUrl, setAudioUrl] = useState('')
-  const [status, setStatus] = useState('')
-  const [busy, setBusy] = useState(false)
-  const headers = { Authorization: `Bearer ${API_KEY}` }
+  const [health, setHealth] = useState<Health>({ service: 'checking' })
+  const [message, setMessage] = useState<Message | null>(null)
+  const [loadingVoices, setLoadingVoices] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
+  const [previewingVoiceId, setPreviewingVoiceId] = useState('')
+  const [playingPreviewVoiceId, setPlayingPreviewVoiceId] = useState('')
+  const [deletingVoiceId, setDeletingVoiceId] = useState('')
+  const [previewAudio, setPreviewAudio] = useState<PreviewAudio | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [generatedAudio, setGeneratedAudio] = useState<GeneratedAudio | null>(null)
 
-  async function loadVoices() {
-    setStatus('Loading voices…')
+  const selectedVoice = useMemo(
+    () => voices.find(voice => voice.voice_id === selectedVoiceId),
+    [voices, selectedVoiceId],
+  )
+  const busy = loadingVoices || uploading || generating || Boolean(deletingVoiceId)
+  const cleanText = text.trim()
+  const cleanVoiceName = voiceNameInput.trim()
+  const canGenerate = Boolean(selectedVoiceId && cleanText && !busy)
+  const canAddVoice = Boolean(cleanVoiceName && referenceFile && !busy)
+
+  async function checkHealth() {
+    setHealth({ service: 'checking' })
     try {
-      const response = await fetch(`${API_URL}/api/voices`, { headers })
-      if (!response.ok) throw new Error('Could not reach the voice server.')
+      const response = await fetch('/api/health', { cache: 'no-store' })
+      if (!response.ok) throw new Error(await errorDetail(response))
       const data = await response.json()
-      setVoices(data.voices)
-      if (!voiceId && data.voices[0]) setVoiceId(data.voices[0].voice_id)
-      setStatus(data.voices.length ? '' : 'Upload a WAV reference to get started.')
-    } catch (error) { setStatus(error instanceof Error ? error.message : 'Could not load voices.') }
+      const reachable = Boolean(data?.runpod?.reachable)
+      const modelLoaded = Boolean(data?.runpod?.engine?.model_loaded)
+      setHealth({
+        service: reachable ? (modelLoaded ? 'online' : 'warming') : 'offline',
+        detail: reachable ? undefined : data?.runpod?.detail || 'RunPod voice API is unavailable.',
+      })
+    } catch (error) {
+      setHealth({
+        service: 'offline',
+        detail: error instanceof Error ? error.message : 'Local voice API is unavailable.',
+      })
+    }
   }
-  useEffect(() => { loadVoices() }, [])
 
-  async function upload(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) return
-    setBusy(true); setStatus('Saving reference…')
+  async function loadVoices(preferredVoiceId?: string) {
+    setLoadingVoices(true)
     try {
-      const response = await fetch(`${API_URL}/api/voices`, { method: 'POST', headers, body: (() => { const form = new FormData(); form.append('file', file); return form })() })
-      if (!response.ok) throw new Error((await response.json()).detail || 'Upload failed.')
-      const voice = await response.json(); setVoiceId(voice.voice_id); await loadVoices(); setStatus('Reference saved.')
-    } catch (error) { setStatus(error instanceof Error ? error.message : 'Upload failed.') }
-    finally { setBusy(false); event.target.value = '' }
+      const response = await fetch('/api/voices', { cache: 'no-store' })
+      if (!response.ok) throw new Error(await errorDetail(response))
+      const data = await response.json()
+      const nextVoices = Array.isArray(data.voices) ? data.voices as Voice[] : []
+      setVoices(nextVoices)
+
+      const nextVoiceId = preferredVoiceId || selectedVoiceId
+      if (nextVoiceId && nextVoices.some(voice => voice.voice_id === nextVoiceId)) {
+        setSelectedVoiceId(nextVoiceId)
+      } else if (selectedVoiceId) {
+        setSelectedVoiceId('')
+      }
+
+      if (nextVoices.length === 0) {
+        setMessage({ tone: 'neutral', text: 'No saved voices yet.' })
+      } else {
+        setMessage(null)
+      }
+    } catch (error) {
+      setMessage({ tone: 'bad', text: error instanceof Error ? error.message : 'Could not load voices.' })
+    } finally {
+      setLoadingVoices(false)
+    }
   }
+
+  useEffect(() => {
+    checkHealth()
+    loadVoices()
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (previewAudio?.url) URL.revokeObjectURL(previewAudio.url)
+    }
+  }, [previewAudio?.url])
+
+  useEffect(() => {
+    return () => {
+      if (generatedAudio?.url) URL.revokeObjectURL(generatedAudio.url)
+    }
+  }, [generatedAudio?.url])
+
+  async function previewVoice(voice: Voice) {
+    if (voice.preview_available === false) {
+      setMessage({ tone: 'bad', text: 'Preview is not available for this voice.' })
+      return
+    }
+
+    previewPlayerRef.current?.pause()
+    if (previewPlayerRef.current) previewPlayerRef.current.currentTime = 0
+    setPlayingPreviewVoiceId('')
+    setPreviewingVoiceId(voice.voice_id)
+    setMessage(null)
+
+    try {
+      const response = await fetch(`/api/voices/${encodeURIComponent(voice.voice_id)}/preview`, { cache: 'no-store' })
+      if (!response.ok) throw new Error(await errorDetail(response))
+      const url = URL.createObjectURL(await response.blob())
+      setPreviewAudio({ voiceId: voice.voice_id, url })
+      setPlayingPreviewVoiceId(voice.voice_id)
+    } catch (error) {
+      setMessage({ tone: 'bad', text: error instanceof Error ? error.message : 'Could not load preview.' })
+    } finally {
+      setPreviewingVoiceId('')
+    }
+  }
+
+  function stopPreview() {
+    previewPlayerRef.current?.pause()
+    if (previewPlayerRef.current) previewPlayerRef.current.currentTime = 0
+    setPlayingPreviewVoiceId('')
+  }
+
+  function onFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] || null
+    setReferenceFile(file)
+    if (file && !hasSupportedExtension(file)) {
+      setMessage({ tone: 'bad', text: 'Unsupported audio or video format.' })
+    } else {
+      setMessage(null)
+    }
+  }
+
+  async function addVoice() {
+    const file = referenceFile
+    if (!cleanVoiceName) {
+      setMessage({ tone: 'bad', text: 'Enter a voice name.' })
+      return
+    }
+    if (!file) {
+      setMessage({ tone: 'bad', text: 'Choose a reference audio or video file.' })
+      return
+    }
+    if (file.size === 0) {
+      setMessage({ tone: 'bad', text: 'Choose a non-empty reference file.' })
+      return
+    }
+    if (!hasSupportedExtension(file)) {
+      setMessage({ tone: 'bad', text: 'Unsupported audio or video format.' })
+      return
+    }
+
+    setUploading(true)
+    setUploadProgress(0)
+    setMessage({ tone: 'neutral', text: 'Adding voice.' })
+
+    try {
+      const voice = await new Promise<Voice>((resolve, reject) => {
+        const form = new FormData()
+        form.append('display_name', cleanVoiceName)
+        form.append('file', file, file.name || 'reference.wav')
+
+        const request = new XMLHttpRequest()
+        request.open('POST', '/api/voices')
+        request.timeout = 600_000
+        request.upload.onprogress = event => {
+          if (event.lengthComputable) {
+            setUploadProgress(Math.round((event.loaded / event.total) * 100))
+          }
+        }
+        request.onload = () => {
+          if (request.status >= 200 && request.status < 300) {
+            try {
+              resolve(JSON.parse(request.responseText) as Voice)
+            } catch {
+              reject(new Error('Voice was added but returned an invalid response.'))
+            }
+            return
+          }
+          reject(new Error(xhrErrorDetail(request.status, request.responseText)))
+        }
+        request.onerror = () => reject(new Error('RunPod voice upload is unavailable.'))
+        request.ontimeout = () => reject(new Error('RunPod voice upload timed out.'))
+        request.send(form)
+      })
+
+      setUploadProgress(100)
+      setVoiceNameInput('')
+      setReferenceFile(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      await loadVoices()
+      setMessage({ tone: 'good', text: `${voiceName(voice)} was added.` })
+    } catch (error) {
+      setMessage({ tone: 'bad', text: error instanceof Error ? error.message : 'Add Voice failed.' })
+    } finally {
+      setUploading(false)
+      setUploadProgress(null)
+    }
+  }
+
+  function useVoice(voice: Voice) {
+    setSelectedVoiceId(voice.voice_id)
+    setMessage({ tone: 'good', text: `Selected Voice: ${voiceName(voice)}.` })
+  }
+
+  async function deleteSavedVoice(voice: Voice) {
+    const name = voiceName(voice)
+    if (!window.confirm(`Delete ${name}?`)) return
+
+    if (playingPreviewVoiceId === voice.voice_id) {
+      stopPreview()
+    }
+
+    setDeletingVoiceId(voice.voice_id)
+    setMessage({ tone: 'neutral', text: `Deleting ${name}.` })
+
+    try {
+      const response = await fetch(`/api/voices/${encodeURIComponent(voice.voice_id)}`, {
+        method: 'DELETE',
+        cache: 'no-store',
+      })
+      if (!response.ok) throw new Error(await errorDetail(response))
+
+      if (selectedVoiceId === voice.voice_id) {
+        setSelectedVoiceId('')
+      }
+      if (previewAudio?.voiceId === voice.voice_id) {
+        setPreviewAudio(null)
+        setPlayingPreviewVoiceId('')
+      }
+      setVoices(previous => previous.filter(item => item.voice_id !== voice.voice_id))
+      await loadVoices()
+      setMessage({ tone: 'good', text: `${name} was deleted.` })
+    } catch (error) {
+      setMessage({ tone: 'bad', text: error instanceof Error ? error.message : 'Could not delete voice.' })
+    } finally {
+      setDeletingVoiceId('')
+    }
+  }
+
   async function generate() {
-    if (!voiceId || !text.trim()) return setStatus('Choose a voice and enter text first.')
-    setBusy(true); setStatus('Generating WAV…'); setAudioUrl('')
+    if (!selectedVoiceId) {
+      setMessage({ tone: 'bad', text: 'Select a voice first.' })
+      return
+    }
+    if (!cleanText) {
+      setMessage({ tone: 'bad', text: 'Enter text before generating speech.' })
+      return
+    }
+    if (cleanText.length > MAX_TEXT_LENGTH) {
+      setMessage({ tone: 'bad', text: `Text exceeds ${MAX_TEXT_LENGTH} characters.` })
+      return
+    }
+
+    setGenerating(true)
+    setGeneratedAudio(null)
+    setMessage({ tone: 'neutral', text: `Generating speech with ${voiceName(selectedVoice)}.` })
+
     try {
-      const response = await fetch(`${API_URL}/api/tts`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ voice_id: voiceId, text }) })
-      if (!response.ok) throw new Error((await response.json()).detail || 'Generation failed.')
-      setAudioUrl(URL.createObjectURL(await response.blob())); setStatus('Ready to listen.')
-    } catch (error) { setStatus(error instanceof Error ? error.message : 'Generation failed.') }
-    finally { setBusy(false) }
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_id: selectedVoiceId, text: cleanText }),
+      })
+      if (!response.ok) throw new Error(await errorDetail(response))
+
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const filename = filenameFromDisposition(
+        response.headers.get('content-disposition'),
+        `${selectedVoiceId}-${Date.now()}.wav`,
+      )
+
+      setGeneratedAudio({ url, filename })
+      setMessage({ tone: 'good', text: 'Generated audio is ready.' })
+    } catch (error) {
+      setMessage({ tone: 'bad', text: error instanceof Error ? error.message : 'Generation failed.' })
+    } finally {
+      setGenerating(false)
+    }
   }
 
-  return <main className="min-h-screen bg-background text-foreground"><div className="mx-auto flex min-h-screen max-w-5xl flex-col px-5 py-6 sm:px-8 sm:py-10">
-    <header className="flex items-center justify-between border-b border-border pb-6"><div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground"><Mic2 size={19} /></span><div><p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">Local voice lab</p><h1 className="font-serif text-xl font-semibold">Chatterbox server</h1></div></div><a className="hidden min-h-11 items-center gap-2 text-sm text-muted-foreground hover:text-foreground sm:flex" href={`${API_URL}/health`} target="_blank" rel="noreferrer">API health <ArrowUpRight size={15} /></a></header>
-    <section className="grid flex-1 gap-8 py-10 lg:grid-cols-[0.78fr_1.22fr] lg:items-start lg:gap-16"><div><p className="mb-4 font-mono text-xs uppercase tracking-[0.22em] text-accent">Independent TTS infrastructure</p><h2 className="max-w-xl font-serif text-5xl leading-[0.98] tracking-tight sm:text-6xl">Give your app a voice it can call.</h2><p className="mt-6 max-w-md text-base leading-7 text-muted-foreground">Store reference audio locally, generate speech through one clean HTTP endpoint, and keep Chatterbox out of your main application.</p><div className="mt-8 flex flex-wrap gap-3 text-xs text-muted-foreground"><span className="rounded-full border border-border px-3 py-2">Bearer protected</span><span className="rounded-full border border-border px-3 py-2">Raw WAV output</span></div></div>
-      <div className="space-y-4"><div className="panel"><div className="flex items-center justify-between"><div><p className="eyebrow">01 / Reference voices</p><h3 className="panel-title">Choose a voice</h3></div><button className="icon-button" onClick={loadVoices} aria-label="Refresh voices"><RefreshCw size={17} /></button></div><div className="mt-5 flex flex-col gap-3 sm:flex-row"><select className="control min-h-12 flex-1" value={voiceId} onChange={e => setVoiceId(e.target.value)} aria-label="Voice"><option value="">Select a saved voice</option>{voices.map(voice => <option key={voice.voice_id} value={voice.voice_id}>{voice.voice_id} · {Math.round(voice.size_bytes / 1024)} KB</option>)}</select><label className="button-secondary"><Upload size={16} /> Upload WAV<input className="sr-only" type="file" accept="audio/wav,.wav" onChange={upload} disabled={busy} /></label></div></div>
-        <div className="panel"><p className="eyebrow">02 / Synthesis</p><h3 className="panel-title">Write a line</h3><textarea className="control mt-5 min-h-36 w-full resize-y" maxLength={3000} placeholder="Hello from my application." value={text} onChange={e => setText(e.target.value)} /><div className="mt-3 flex items-center justify-between gap-4"><span className="text-xs text-muted-foreground">{text.length} / 3000 characters</span><button className="button-primary" onClick={generate} disabled={busy || !voiceId || !text.trim()}><Volume2 size={16} /> {busy ? 'Working…' : 'Generate speech'}</button></div></div>
-        {status && <p className="rounded-lg border border-border bg-muted px-4 py-3 text-sm text-muted-foreground" role="status">{status}</p>}
-        {audioUrl && <div className="panel border-accent/40"><div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-full bg-accent text-accent-foreground"><Headphones size={18} /></span><div><p className="eyebrow">03 / Output</p><h3 className="panel-title">Your WAV is ready</h3></div></div><audio className="mt-5 w-full" controls src={audioUrl} /><a className="button-secondary mt-4 w-full justify-center" href={audioUrl} download="chatterbox-speech.wav"><Download size={16} /> Download WAV</a></div>}
-      </div></section><footer className="border-t border-border pt-5 text-xs text-muted-foreground">FastAPI at <span className="font-mono">{API_URL}</span> · No queues, databases, or provider lock-in.</footer>
-  </div></main>
+  return (
+    <main className="studio-shell">
+      <div className="studio-frame">
+        <header className="studio-header">
+          <div className="brand-lockup">
+            <span className="brand-mark"><Mic2 size={20} /></span>
+            <h1>Voice Studio</h1>
+          </div>
+          <div className={`service-status ${health.service}`} aria-label={`Service status: ${statusLabel(health)}`}>
+            <span />
+            {statusLabel(health)}
+          </div>
+        </header>
+
+        <div className="studio-grid">
+          <section className="studio-section voice-library" aria-label="Available voices">
+            <div className="section-heading">
+              <h2>Available Voices</h2>
+              <button className="icon-button" onClick={() => loadVoices()} disabled={loadingVoices} type="button" title="Refresh voices">
+                <RefreshCw className={loadingVoices ? 'spin' : ''} size={17} />
+              </button>
+            </div>
+
+            <div className="voice-list">
+              {loadingVoices && voices.length === 0 ? (
+                Array.from({ length: 3 }).map((_, index) => <div className="voice-skeleton" key={index} />)
+              ) : voices.length === 0 ? (
+                <div className="empty-state">No voices added yet.</div>
+              ) : (
+                voices.map(voice => {
+                  const selected = voice.voice_id === selectedVoiceId
+                  const playing = playingPreviewVoiceId === voice.voice_id
+                  const loadingPreview = previewingVoiceId === voice.voice_id
+                  const deleting = deletingVoiceId === voice.voice_id
+
+                  return (
+                    <article className={selected ? 'voice-row selected' : 'voice-row'} key={voiceKey(voice)}>
+                      <div className="voice-row-top">
+                        <h3>{voiceName(voice)}</h3>
+                        {selected && <span className="selected-mark"><CheckCircle2 size={14} />Selected</span>}
+                      </div>
+                      <div className="voice-actions">
+                        <button className="secondary-button" onClick={() => previewVoice(voice)} disabled={busy || voice.preview_available === false} type="button">
+                          {loadingPreview ? <Loader2 className="spin" size={15} /> : playing ? <Volume2 size={15} /> : <Play size={15} />}
+                          {playing ? 'Playing' : 'Preview'}
+                        </button>
+                        <button className="primary-button" onClick={() => useVoice(voice)} disabled={busy} type="button">
+                          Use Voice
+                        </button>
+                        <button className="danger-button" onClick={() => deleteSavedVoice(voice)} disabled={busy} type="button">
+                          {deleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+                          Delete
+                        </button>
+                      </div>
+                      {playing && (
+                        <div className="preview-player">
+                          <audio
+                            ref={previewPlayerRef}
+                            controls
+                            autoPlay
+                            src={previewAudio?.voiceId === voice.voice_id ? previewAudio.url : undefined}
+                            onEnded={() => setPlayingPreviewVoiceId('')}
+                            onPause={() => setPlayingPreviewVoiceId(current => current === voice.voice_id ? '' : current)}
+                            onPlay={() => setPlayingPreviewVoiceId(voice.voice_id)}
+                          />
+                          <button className="icon-button small" onClick={stopPreview} type="button" title="Stop preview">
+                            <Square size={14} />
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  )
+                })
+              )}
+            </div>
+          </section>
+
+          <div className="workspace-stack">
+            <section className="studio-section" aria-label="Add voice">
+              <div className="section-heading">
+                <h2>Add Voice</h2>
+              </div>
+              <div className="form-grid">
+                <label className="field-label" htmlFor="voice-name">Voice Name</label>
+                <input
+                  id="voice-name"
+                  className="text-input"
+                  value={voiceNameInput}
+                  onChange={event => setVoiceNameInput(event.target.value)}
+                  maxLength={80}
+                  placeholder="James"
+                  disabled={busy}
+                />
+
+                <label className="field-label" htmlFor="voice-reference">Reference Audio / Video</label>
+                <div className="file-picker">
+                  <input
+                    ref={fileInputRef}
+                    id="voice-reference"
+                    className="sr-only"
+                    type="file"
+                    accept={ACCEPT}
+                    onChange={onFileChange}
+                    disabled={busy}
+                  />
+                  <button className="secondary-button" onClick={() => fileInputRef.current?.click()} disabled={busy} type="button">
+                    <Upload size={16} />
+                    Choose File
+                  </button>
+                  <span>{referenceFile?.name || 'No file chosen'}</span>
+                </div>
+
+                {typeof uploadProgress === 'number' && (
+                  <div className="progress-track" aria-label="Upload progress">
+                    <span style={{ width: `${uploadProgress}%` }} />
+                  </div>
+                )}
+
+                <button className="primary-button add-button" onClick={addVoice} disabled={!canAddVoice} type="button">
+                  {uploading ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+                  Add Voice
+                </button>
+              </div>
+            </section>
+
+            <section className="studio-section synthesis-panel" aria-label="Generate speech">
+              <div className="section-heading">
+                <h2>Generate Speech</h2>
+              </div>
+
+              <div className="selected-voice">
+                <span>Selected Voice:</span>
+                <strong>{selectedVoice ? voiceName(selectedVoice) : 'Select a voice first.'}</strong>
+              </div>
+
+              <label className="field-label" htmlFor="tts-text">Text</label>
+              <textarea
+                id="tts-text"
+                className="text-editor"
+                maxLength={MAX_TEXT_LENGTH}
+                value={text}
+                onChange={event => setText(event.target.value)}
+                disabled={busy}
+              />
+              <div className="generate-row">
+                <span>{text.length} / {MAX_TEXT_LENGTH}</span>
+                <button className="primary-button" onClick={generate} disabled={!canGenerate} type="button">
+                  {generating ? <Loader2 className="spin" size={16} /> : <Volume2 size={16} />}
+                  {generating ? 'Generating' : 'Generate'}
+                </button>
+              </div>
+            </section>
+
+            <section className="studio-section" aria-label="Generated audio">
+              <div className="section-heading">
+                <h2>Generated Audio</h2>
+              </div>
+
+              {generatedAudio ? (
+                <div className="output-ready">
+                  <audio className="audio-control" controls src={generatedAudio.url} />
+                  <div className="output-actions">
+                    <a className="secondary-button" href={generatedAudio.url} download={generatedAudio.filename}>
+                      <Download size={16} />
+                      Download
+                    </a>
+                    <button className="primary-button" onClick={generate} disabled={!canGenerate} type="button">
+                      <Volume2 size={16} />
+                      Generate Again
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="empty-state">No generated audio yet.</div>
+              )}
+            </section>
+
+            {message && (
+              <div className={`message ${message.tone}`} role="status" aria-live="polite">
+                <MessageIcon tone={message.tone} />
+                <span>{message.text}</span>
+              </div>
+            )}
+
+            {health.detail && <p className="service-detail">{health.detail}</p>}
+          </div>
+        </div>
+      </div>
+    </main>
+  )
+}
+
+function MessageIcon({ tone }: { tone: Message['tone'] }) {
+  if (tone === 'bad') return <AlertCircle size={17} />
+  if (tone === 'good') return <CheckCircle2 size={17} />
+  return <Loader2 className="spin" size={17} />
 }

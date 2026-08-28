@@ -13,3 +13,12 @@ __v0_jsx-dev-runtime.ts
 node_modules
 .next/
 .DS_Store
+# Backend runtime
+server/.venv/
+server/voices/
+server/generated/
+server/.env
+
+# Python
+__pycache__/
+*.py[cod]

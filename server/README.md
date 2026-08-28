@@ -1,6 +1,9 @@
 # Standalone Chatterbox Voice Server
 
-A single-process FastAPI service. The calling application only needs `VOICE_API_URL`, `VOICE_API_KEY`, and `VOICE_ID`; it never imports Chatterbox.
+A single-process FastAPI service. The calling application should reach it
+through the local Next.js API bridge, which owns `VOICE_API_BASE_URL` and
+`VOICE_API_KEY`; the browser never imports Chatterbox and never receives the
+API key.
 
 ## Setup
 
@@ -25,7 +28,9 @@ python smoke_test.py ./reference.wav
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
-Open `http://localhost:3000` for the browser control panel, and set `NEXT_PUBLIC_VOICE_API_URL` plus `NEXT_PUBLIC_VOICE_API_KEY` in the Next app environment.
+Open `http://localhost:3000` for the browser control panel, and set
+`VOICE_API_BASE_URL` plus `VOICE_API_KEY` in the Next app's server-side
+environment. Do not use `NEXT_PUBLIC_*` for the voice API key.
 
 The interface uploads a WAV reference, lists voices, generates speech, and provides playback/download. No database, queue, Redis, Twilio, or LiveKit is required.
 
