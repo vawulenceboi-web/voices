@@ -3,7 +3,7 @@ import { apiErrorResponse } from '../voice-response'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-export const maxDuration = 600
+export const maxDuration = 300
 
 const VOICE_ID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/
 const MAX_TEXT_LENGTH = 3000
