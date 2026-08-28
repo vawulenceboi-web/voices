@@ -312,6 +312,18 @@ h3 {
   gap: 10px;
 }
 
+.one-time-key code {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.copy-status {
+  min-width: 48px;
+  color: var(--good);
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .voice-row.selected {
   border-color: var(--foreground);
   box-shadow: 0 0 0 1px var(--foreground) inset;
@@ -386,6 +398,12 @@ h3 {
 .icon-button.small {
   width: 36px;
   height: 36px;
+}
+
+.icon-button.copied {
+  border-color: #b8d8c0;
+  background: #f7fbf8;
+  color: var(--good);
 }
 
 .primary-button:hover,

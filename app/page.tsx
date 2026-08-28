@@ -120,9 +120,45 @@ function statusLabel(health: Health) {
   return 'Checking'
 }
 
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+
+  const previousActiveElement = document.activeElement
+  const selection = document.getSelection()
+  const previousRange = selection?.rangeCount ? selection.getRangeAt(0) : null
+  const textarea = document.createElement('textarea')
+
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '0'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+
+  try {
+    const copied = document.execCommand('copy')
+    if (!copied) throw new Error('Copy command failed.')
+  } finally {
+    document.body.removeChild(textarea)
+    if (previousActiveElement instanceof HTMLElement) previousActiveElement.focus()
+    if (selection && previousRange) {
+      selection.removeAllRanges()
+      selection.addRange(previousRange)
+    }
+  }
+}
+
 export default function Page() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const previewPlayerRef = useRef<HTMLAudioElement>(null)
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [voices, setVoices] = useState<Voice[]>([])
   const [selectedVoiceId, setSelectedVoiceId] = useState('')
   const [voiceNameInput, setVoiceNameInput] = useState('')
@@ -147,6 +183,7 @@ export default function Page() {
   const [revokingDeveloperKeyId, setRevokingDeveloperKeyId] = useState('')
   const [developerKeyError, setDeveloperKeyError] = useState('')
   const [createdDeveloperKey, setCreatedDeveloperKey] = useState<CreatedDeveloperApiKey | null>(null)
+  const [createdDeveloperKeyCopied, setCreatedDeveloperKeyCopied] = useState(false)
 
   const selectedVoice = useMemo(
     () => voices.find(voice => voice.voice_id === selectedVoiceId),
@@ -248,6 +285,12 @@ export default function Page() {
       if (generatedAudio?.url) URL.revokeObjectURL(generatedAudio.url)
     }
   }, [generatedAudio?.url])
+
+  useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current)
+    }
+  }, [])
 
   async function previewVoice(voice: Voice) {
     if (voice.preview_available === false) {
@@ -421,6 +464,8 @@ export default function Page() {
       const created = await response.json() as CreatedDeveloperApiKey
       const { api_key: _apiKey, ...maskedKey } = created
       setCreatedDeveloperKey(created)
+      setCreatedDeveloperKeyCopied(false)
+      if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current)
       setDeveloperName('')
       setDeveloperKeys(previous => [maskedKey, ...previous.filter(key => key.id !== created.id)])
       setMessage({ tone: 'good', text: 'Developer API key created.' })
@@ -434,9 +479,17 @@ export default function Page() {
   async function copyCreatedDeveloperKey() {
     if (!createdDeveloperKey?.api_key) return
     try {
-      await navigator.clipboard.writeText(createdDeveloperKey.api_key)
+      await copyText(createdDeveloperKey.api_key)
+      setCreatedDeveloperKeyCopied(true)
+      setDeveloperKeyError('')
+      if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current)
+      copyResetTimerRef.current = setTimeout(() => {
+        setCreatedDeveloperKeyCopied(false)
+        copyResetTimerRef.current = null
+      }, 3000)
       setMessage({ tone: 'good', text: 'API key copied.' })
     } catch {
+      setCreatedDeveloperKeyCopied(false)
       setMessage({ tone: 'bad', text: 'Could not copy API key.' })
     }
   }
@@ -729,9 +782,18 @@ export default function Page() {
                       <dt>API Key</dt>
                       <dd className="one-time-key">
                         <code>{createdDeveloperKey.api_key}</code>
-                        <button className="icon-button small" onClick={copyCreatedDeveloperKey} type="button" title="Copy API key">
-                          <Copy size={14} />
+                        <button
+                          className={createdDeveloperKeyCopied ? 'icon-button small copied' : 'icon-button small'}
+                          onClick={copyCreatedDeveloperKey}
+                          type="button"
+                          title={createdDeveloperKeyCopied ? 'Copied' : 'Copy API key'}
+                          aria-label={createdDeveloperKeyCopied ? 'API key copied' : 'Copy API key'}
+                        >
+                          {createdDeveloperKeyCopied ? <CheckCircle2 size={14} /> : <Copy size={14} />}
                         </button>
+                        <span className="copy-status" aria-live="polite">
+                          {createdDeveloperKeyCopied ? 'Copied' : ''}
+                        </span>
                       </dd>
                     </div>
                   </dl>
