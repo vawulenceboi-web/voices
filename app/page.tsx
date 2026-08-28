@@ -113,6 +113,7 @@ export default function Page() {
   const [text, setText] = useState('')
   const [health, setHealth] = useState<Health>({ service: 'checking' })
   const [message, setMessage] = useState<Message | null>(null)
+  const [hydrated, setHydrated] = useState(false)
   const [loadingVoices, setLoadingVoices] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
@@ -132,6 +133,7 @@ export default function Page() {
   const cleanVoiceName = voiceNameInput.trim()
   const canGenerate = Boolean(selectedVoiceId && cleanText && !busy)
   const canAddVoice = Boolean(cleanVoiceName && referenceFile && !busy)
+  const disabledAfterHydration = (disabled: boolean) => hydrated ? disabled : undefined
 
   async function checkHealth() {
     setHealth({ service: 'checking' })
@@ -182,9 +184,14 @@ export default function Page() {
   }
 
   useEffect(() => {
+    setHydrated(true)
+  }, [])
+
+  useEffect(() => {
+    if (!hydrated) return
     checkHealth()
     loadVoices()
-  }, [])
+  }, [hydrated])
 
   useEffect(() => {
     return () => {
@@ -406,7 +413,7 @@ export default function Page() {
           <section className="studio-section voice-library" aria-label="Available voices">
             <div className="section-heading">
               <h2>Available Voices</h2>
-              <button className="icon-button" onClick={() => loadVoices()} disabled={loadingVoices} type="button" title="Refresh voices">
+              <button className="icon-button" onClick={() => loadVoices()} disabled={disabledAfterHydration(loadingVoices)} type="button" title="Refresh voices">
                 <RefreshCw className={loadingVoices ? 'spin' : ''} size={17} />
               </button>
             </div>
@@ -479,7 +486,8 @@ export default function Page() {
                   onChange={event => setVoiceNameInput(event.target.value)}
                   maxLength={80}
                   placeholder="James"
-                  disabled={busy}
+                  autoComplete="off"
+                  disabled={disabledAfterHydration(busy)}
                 />
 
                 <label className="field-label" htmlFor="voice-reference">Reference Audio / Video</label>
@@ -491,9 +499,9 @@ export default function Page() {
                     type="file"
                     accept={ACCEPT}
                     onChange={onFileChange}
-                    disabled={busy}
+                    disabled={disabledAfterHydration(busy)}
                   />
-                  <button className="secondary-button" onClick={() => fileInputRef.current?.click()} disabled={busy} type="button">
+                  <button className="secondary-button" onClick={() => fileInputRef.current?.click()} disabled={disabledAfterHydration(busy)} type="button">
                     <Upload size={16} />
                     Choose File
                   </button>
@@ -506,7 +514,7 @@ export default function Page() {
                   </div>
                 )}
 
-                <button className="primary-button add-button" onClick={addVoice} disabled={!canAddVoice} type="button">
+                <button className="primary-button add-button" onClick={addVoice} disabled={disabledAfterHydration(!canAddVoice)} type="button">
                   {uploading ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
                   Add Voice
                 </button>
@@ -530,11 +538,11 @@ export default function Page() {
                 maxLength={MAX_TEXT_LENGTH}
                 value={text}
                 onChange={event => setText(event.target.value)}
-                disabled={busy}
+                disabled={disabledAfterHydration(busy)}
               />
               <div className="generate-row">
                 <span>{text.length} / {MAX_TEXT_LENGTH}</span>
-                <button className="primary-button" onClick={generate} disabled={!canGenerate} type="button">
+                <button className="primary-button" onClick={generate} disabled={disabledAfterHydration(!canGenerate)} type="button">
                   {generating ? <Loader2 className="spin" size={16} /> : <Volume2 size={16} />}
                   {generating ? 'Generating' : 'Generate'}
                 </button>
@@ -554,7 +562,7 @@ export default function Page() {
                       <Download size={16} />
                       Download
                     </a>
-                    <button className="primary-button" onClick={generate} disabled={!canGenerate} type="button">
+                    <button className="primary-button" onClick={generate} disabled={disabledAfterHydration(!canGenerate)} type="button">
                       <Volume2 size={16} />
                       Generate Again
                     </button>
